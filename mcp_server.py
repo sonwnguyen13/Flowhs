@@ -34,6 +34,7 @@ from muse2api_client import (
     generate_image_muse,
     generate_video_muse,
     parse_muse_cookies,
+    verify_us_proxy,
 )
 
 mcp = FastMCP("flowhs")
@@ -57,7 +58,7 @@ def _get_muse_settings() -> tuple[str, str, str]:
     cfg = _load_flowhs_config()
     base_url = cfg.get("muse2api_url") or DEFAULT_MUSE2API_URL
     api_key = cfg.get("muse2api_key") or DEFAULT_MUSE2API_KEY
-    proxy = cfg.get("muse_proxy") or ""
+    proxy = cfg.get("muse2api_proxy") or cfg.get("muse_proxy") or ""
     return base_url, api_key, proxy
 
 
@@ -394,6 +395,15 @@ async def flowhs_muse_accounts(
 
 
 @mcp.tool()
+async def flowhs_check_us_proxy(proxy: str = "") -> dict[str, Any]:
+    """Verify that a proxy (`ip:port:user:pass`) is working, resolves to a genuine United States (`US`) IP,
+    and is NOT geo-blocked (`isGeoGated: false`) on `https://muse.ai/`."""
+    _, _, default_proxy = _get_muse_settings()
+    use_proxy = (proxy or default_proxy or "").strip()
+    return await verify_us_proxy(use_proxy)
+
+
+@mcp.tool()
 async def flowhs_muse_auto_login(
     account_spec: str,
     proxy: str = "",
@@ -403,14 +413,34 @@ async def flowhs_muse_auto_login(
     (e.g. `joshuathompson796@evrnext.com|https://generator.email/inbox1/joshuathompson796@evrnext.com`),
     extract OTP code automatically from the inbox URL, capture `hatch_sess` + `hatch_gw` + `hatch_vml` cookies,
     and import the account(s) into `muse2api`.
+    REQUIRES a valid US proxy (`countryCode == 'US'` and `isGeoGated == False`) — verifies the US proxy BEFORE opening Camoufox.
 
     Args:
         account_spec: One or more lines of `email|inbox_url` (or just `email` for generator.email).
-        proxy: Optional US residential proxy (`host:port:user:pass`). Defaults to `muse_proxy` in `config.json`.
+        proxy: Required US residential proxy (`host:port:user:pass`). Falls back to `muse_proxy` in `config.json` if already configured.
         headless: Whether to run Camoufox headless (`False` by default).
     """
     base_url, api_key, default_proxy = _get_muse_settings()
     use_proxy = (proxy or default_proxy or "").strip()
+    proxy_check = await verify_us_proxy(use_proxy)
+    if not proxy_check.get("ok"):
+        return {
+            "ok": False,
+            "error": proxy_check.get("error") or "Bắt buộc phải có Proxy US hợp lệ để đăng nhập tài khoản Muse!",
+            "proxy_check": proxy_check,
+        }
+
+    # Save verified US proxy into config.json
+    if proxy and proxy.strip():
+        try:
+            cfg_path = FLOWHS_DIR / "config.json"
+            cfg = _load_flowhs_config()
+            cfg["muse_proxy"] = use_proxy
+            cfg["muse2api_proxy"] = use_proxy
+            cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
     lines = [ln.strip() for ln in (account_spec or "").splitlines() if ln.strip()]
     results = []
     for ln in lines:
@@ -425,6 +455,7 @@ async def flowhs_muse_auto_login(
     return {
         "ok": any(r.get("ok") for r in results),
         "total": len(results),
+        "proxy_check": proxy_check,
         "results": results,
     }
 
