@@ -444,5 +444,70 @@ async def veohs_clean_watermark(input_path: str, output_path: str = "") -> dict[
     return {"ok": True, "path": cleaned}
 
 
-if __name__ == "__main__":
+def get_mcp_config_entry() -> dict[str, Any]:
+    """Build the `mcpServers.veohs` entry for the current installation (portable `.exe` or Python source)."""
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        mcp_exe = exe_dir / "Flowhs-MCP.exe"
+        cmd_exe = mcp_exe if mcp_exe.exists() else Path(sys.executable).resolve()
+        return {
+            "command": str(cmd_exe),
+            "args": ["--mcp"],
+            "env": {"PYTHONIOENCODING": "utf-8"},
+        }
+    exe_dir = _FLOWHS_DIR
+    mcp_exe = exe_dir / "Flowhs-MCP.exe"
+    if mcp_exe.exists():
+        return {
+            "command": str(mcp_exe),
+            "args": ["--mcp"],
+            "env": {"PYTHONIOENCODING": "utf-8"},
+        }
+    return {
+        "command": "python",
+        "args": [str(Path(__file__).resolve())],
+        "env": {"PYTHONIOENCODING": "utf-8"},
+    }
+
+
+def register_mcp_to_local_agents() -> list[str]:
+    """Automatically register `veohs` MCP into installed AI agents on this PC
+    (Antigravity, Claude Desktop, Claude Code, Cursor). Returns list of updated config paths."""
+    entry = get_mcp_config_entry()
+    home = Path.home()
+    appdata = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
+    candidates = [
+        ("Antigravity", home / ".gemini" / "antigravity" / "mcp_config.json", True),
+        ("Claude Desktop", appdata / "Claude" / "claude_desktop_config.json", False),
+        ("Claude Code", home / ".claude.json", False),
+        ("Cursor", home / ".cursor" / "mcp.json", False),
+    ]
+    updated: list[str] = []
+    for label, cfg_path, create_parent in candidates:
+        try:
+            if not cfg_path.exists():
+                if not create_parent and not cfg_path.parent.exists():
+                    continue
+                cfg_path.parent.mkdir(parents=True, exist_ok=True)
+                data: dict[str, Any] = {}
+            else:
+                raw = cfg_path.read_text(encoding="utf-8").strip()
+                data = json.loads(raw) if raw else {}
+            if not isinstance(data, dict):
+                continue
+            servers = data.setdefault("mcpServers", {})
+            if servers.get("veohs") != entry:
+                servers["veohs"] = entry
+                cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            updated.append(f"{label} ({cfg_path})")
+        except Exception:
+            pass
+    return updated
+
+
+def main() -> None:
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
