@@ -41,7 +41,20 @@ DEFAULT_IMAGE_MODEL = os.environ.get("MUSE2API_IMAGE_MODEL", "muse-image").strip
 DEFAULT_VIDEO_MODEL = os.environ.get("MUSE2API_VIDEO_MODEL", "muse-video").strip() or "muse-video"
 DEFAULT_VIDEO_SECONDS = int(os.environ.get("MUSE2API_VIDEO_SECONDS", "8") or 8)
 
-_MUSE2API_REPO_DIR = Path(__file__).resolve().parent.parent / "muse2api"
+def _get_muse2api_repo_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        d = Path(sys.executable).resolve().parent / "muse2api_data"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    repo = Path(__file__).resolve().parent.parent / "muse2api"
+    if repo.is_dir():
+        return repo
+    d = Path(__file__).resolve().parent / "muse2api_data"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+_MUSE2API_REPO_DIR = _get_muse2api_repo_dir()
 _SERVER_START_LOCK: Optional[asyncio.Lock] = None
 _SERVER_PROC: Optional[subprocess.Popen] = None
 
@@ -67,7 +80,8 @@ async def ensure_local_muse2api_running(base_url: str = DEFAULT_MUSE2API_URL, *,
     parsed = urlparse(base_url)
     if parsed.hostname not in ("127.0.0.1", "localhost"):
         return False
-    if not (_MUSE2API_REPO_DIR / "src" / "muse2api").is_dir():
+    is_frozen = getattr(sys, "frozen", False)
+    if not is_frozen and not (_MUSE2API_REPO_DIR / "src" / "muse2api").is_dir():
         return False
 
     if _SERVER_START_LOCK is None:
@@ -85,13 +99,15 @@ async def ensure_local_muse2api_running(base_url: str = DEFAULT_MUSE2API_URL, *,
 
         logger.info("Auto-starting local muse2api gateway at %s ...", base_url)
         env = os.environ.copy()
-        env["PYTHONPATH"] = str(_MUSE2API_REPO_DIR / "src") + os.pathsep + env.get("PYTHONPATH", "")
+        if not is_frozen:
+            env["PYTHONPATH"] = str(_MUSE2API_REPO_DIR / "src") + os.pathsep + env.get("PYTHONPATH", "")
         if proxy:
             env["MUSE2API_BROWSER_PROXY"] = proxy
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        cmd = [sys.executable, "--muse2api"] if is_frozen else [sys.executable, "-m", "muse2api"]
         try:
             _SERVER_PROC = subprocess.Popen(
-                [sys.executable, "-m", "muse2api"],
+                cmd,
                 cwd=str(_MUSE2API_REPO_DIR),
                 env=env,
                 stdout=subprocess.DEVNULL,
