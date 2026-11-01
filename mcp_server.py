@@ -36,7 +36,7 @@ from muse2api_client import (
     parse_muse_cookies,
 )
 
-mcp = FastMCP("veohs")
+mcp = FastMCP("flowhs")
 
 BRIDGE_HTTP_URL = os.environ.get("FLOWHS_BRIDGE_HTTP_URL", "http://127.0.0.1:8100")
 DEFAULT_OUT_DIR = FLOWHS_DIR / "outputs" / "mcp"
@@ -117,7 +117,7 @@ async def _get_or_start_local_bridge():
 
 
 @mcp.tool()
-async def veohs_status() -> dict[str, Any]:
+async def flowhs_status() -> dict[str, Any]:
     """Check readiness and active accounts of Muse (`muse2api`) and Google Flow (`FlowBridge`)."""
     base_url, api_key, proxy = _get_muse_settings()
     await ensure_local_muse2api_running(base_url, proxy=proxy)
@@ -154,7 +154,7 @@ async def veohs_status() -> dict[str, Any]:
 
 
 @mcp.tool()
-async def veohs_generate_image(
+async def flowhs_generate_image(
     prompt: str,
     output_path: str = "",
     engine: str = "muse",
@@ -241,7 +241,7 @@ async def veohs_generate_image(
 
 
 @mcp.tool()
-async def veohs_generate_video(
+async def flowhs_generate_video(
     prompt: str,
     output_path: str = "",
     image_path: str = "",
@@ -331,7 +331,7 @@ async def veohs_generate_video(
 
 
 @mcp.tool()
-async def veohs_muse_quota(refresh: bool = False) -> dict[str, Any]:
+async def flowhs_muse_quota(refresh: bool = False) -> dict[str, Any]:
     """Query weekly usage percentage and remaining extra tokens (`1B tokens left`) for all Muse accounts."""
     base_url, api_key, proxy = _get_muse_settings()
     await ensure_local_muse2api_running(base_url, proxy=proxy)
@@ -350,7 +350,7 @@ async def veohs_muse_quota(refresh: bool = False) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def veohs_muse_accounts(
+async def flowhs_muse_accounts(
     action: str = "list",
     label: str = "",
     cookies_raw: str = "",
@@ -394,7 +394,7 @@ async def veohs_muse_accounts(
 
 
 @mcp.tool()
-async def veohs_muse_auto_login(
+async def flowhs_muse_auto_login(
     account_spec: str,
     proxy: str = "",
     headless: bool = False,
@@ -430,7 +430,7 @@ async def veohs_muse_auto_login(
 
 
 @mcp.tool()
-async def veohs_clean_watermark(input_path: str, output_path: str = "") -> dict[str, Any]:
+async def flowhs_clean_watermark(input_path: str, output_path: str = "") -> dict[str, Any]:
     """Remove watermarks from an image or video using PureBase reverse alpha unblending (`gwr.mjs`)."""
     src = Path(input_path)
     if not src.exists():
@@ -445,7 +445,7 @@ async def veohs_clean_watermark(input_path: str, output_path: str = "") -> dict[
 
 
 def get_mcp_config_entry() -> dict[str, Any]:
-    """Build the `mcpServers.veohs` entry for the current installation (portable `.exe` or Python source)."""
+    """Build the `mcpServers.flowhs` entry for the current installation (portable `.exe` or Python source)."""
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).resolve().parent
         mcp_exe = exe_dir / "Flowhs-MCP.exe"
@@ -455,7 +455,7 @@ def get_mcp_config_entry() -> dict[str, Any]:
             "args": ["--mcp"],
             "env": {"PYTHONIOENCODING": "utf-8"},
         }
-    exe_dir = _FLOWHS_DIR
+    exe_dir = FLOWHS_DIR
     mcp_exe = exe_dir / "Flowhs-MCP.exe"
     if mcp_exe.exists():
         return {
@@ -471,7 +471,7 @@ def get_mcp_config_entry() -> dict[str, Any]:
 
 
 def register_mcp_to_local_agents() -> list[str]:
-    """Automatically register `veohs` MCP into installed AI agents on this PC
+    """Automatically register `flowhs` MCP into installed AI agents on this PC
     (Antigravity, Claude Desktop, Claude Code, Cursor). Returns list of updated config paths."""
     entry = get_mcp_config_entry()
     home = Path.home()
@@ -496,8 +496,14 @@ def register_mcp_to_local_agents() -> list[str]:
             if not isinstance(data, dict):
                 continue
             servers = data.setdefault("mcpServers", {})
-            if servers.get("veohs") != entry:
-                servers["veohs"] = entry
+            changed = False
+            if "veohs" in servers:
+                servers.pop("veohs", None)
+                changed = True
+            if servers.get("flowhs") != entry:
+                servers["flowhs"] = entry
+                changed = True
+            if changed:
                 cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
             updated.append(f"{label} ({cfg_path})")
         except Exception:
