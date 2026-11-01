@@ -524,30 +524,158 @@ def update_muse2api_env_proxy(proxy_spec: str) -> None:
         logger.warning("Failed to update muse2api .env proxy: %s", e)
 
 
+def _parse_proxy_spec(proxy_spec: str) -> tuple[str, int, str, str, str]:
+    """Parse `ip:port:user:pass` or `http://user:pass@ip:port` -> `(host, port, user, password, proxy_url)`."""
+    spec = (proxy_spec or "").strip()
+    if not spec:
+        return "", 0, "", "", ""
+    up_host, up_port, p_user, p_pass = "", 0, "", ""
+    if "://" not in spec:
+        parts = spec.split(":")
+        if len(parts) == 4:
+            up_host, up_port, p_user, p_pass = parts[0], int(parts[1]), parts[2], parts[3]
+        elif len(parts) == 2:
+            up_host, up_port = parts[0], int(parts[1])
+    else:
+        p = urlparse(spec)
+        up_host = p.hostname or ""
+        up_port = int(p.port or 80)
+        p_user = unquote(p.username or "")
+        p_pass = unquote(p.password or "")
+    if not up_host or not up_port:
+        return "", 0, "", "", ""
+    from urllib.parse import quote
+    if p_user:
+        proxy_url = f"http://{quote(p_user, safe='')}:{quote(p_pass, safe='')}@{up_host}:{up_port}"
+    else:
+        proxy_url = f"http://{up_host}:{up_port}"
+    return up_host, up_port, p_user, p_pass, proxy_url
+
+
+async def verify_us_proxy(proxy_spec: str) -> dict[str, Any]:
+    """Verify that `proxy_spec` is provided, reachable, resolves to a US IP (`countryCode == 'US'`),
+    and is NOT geo-blocked by Meta/Muse (`"isGeoGated":true`)."""
+    spec = (proxy_spec or "").strip()
+    if not spec:
+        return {
+            "ok": False,
+            "error": "Bắt buộc phải nhập Proxy US (định dạng ip:port:user:pass) trước khi đăng nhập tài khoản Muse!",
+        }
+    up_host, up_port, p_user, p_pass, proxy_url = _parse_proxy_spec(spec)
+    if not proxy_url:
+        return {
+            "ok": False,
+            "error": f"Định dạng Proxy không hợp lệ: {spec!r}. Vui lòng nhập theo mẫu ip:port:user:pass!",
+        }
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(
+            proxy=proxy_url,
+            timeout=15.0,
+            follow_redirects=True,
+            verify=False,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        ) as cl:
+            # 1. GeoIP check
+            r_ip = await cl.get(
+                "http://ip-api.com/json/?fields=status,message,country,countryCode,regionName,city,isp,org,hosting,proxy,query"
+            )
+            geo = r_ip.json() if r_ip.status_code == 200 else {}
+            if geo.get("status") != "success":
+                r_ip2 = await cl.get("https://ipwho.is/")
+                g2 = r_ip2.json() if r_ip2.status_code == 200 else {}
+                geo = {
+                    "country": g2.get("country", ""),
+                    "countryCode": g2.get("country_code", ""),
+                    "regionName": g2.get("region", ""),
+                    "city": g2.get("city", ""),
+                    "isp": (g2.get("connection") or {}).get("isp", ""),
+                    "org": (g2.get("connection") or {}).get("org", ""),
+                    "query": g2.get("ip", ""),
+                }
+
+            country_code = str(geo.get("countryCode") or "").upper()
+            country = str(geo.get("country") or "")
+            ip_addr = str(geo.get("query") or "")
+            isp = str(geo.get("isp") or geo.get("org") or "")
+            region = str(geo.get("regionName") or "")
+
+            if country_code != "US":
+                return {
+                    "ok": False,
+                    "ip": ip_addr,
+                    "country": country,
+                    "countryCode": country_code,
+                    "isp": isp,
+                    "error": f"Proxy không phải IP Mỹ (Quốc gia: {country} [{country_code}], IP: {ip_addr}). Bắt buộc phải dùng Proxy US để login Muse!",
+                }
+
+            # 2. Check muse.ai geo-gate directly
+            is_geo_gated = False
+            try:
+                r_muse = await cl.get("https://muse.ai/")
+                if '"isGeoGated":true' in r_muse.text:
+                    is_geo_gated = True
+            except Exception:
+                pass
+
+            if is_geo_gated:
+                return {
+                    "ok": False,
+                    "ip": ip_addr,
+                    "country": country,
+                    "countryCode": country_code,
+                    "isp": isp,
+                    "isGeoGated": True,
+                    "error": f"Proxy IP {ip_addr} ({isp}) bị Meta/Muse chặn vùng ('isGeoGated': true — IP Datacenter/Hosting). Vui lòng dùng Proxy Dân cư Mỹ (US Residential Proxy)!",
+                }
+
+            return {
+                "ok": True,
+                "ip": ip_addr,
+                "country": country,
+                "countryCode": country_code,
+                "region": region,
+                "isp": isp,
+                "isGeoGated": False,
+            }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"Không thể kết nối qua Proxy US ({e}). Vui lòng kiểm tra lại Proxy!",
+        }
+
+
+def verify_us_proxy_sync(proxy_spec: str) -> dict[str, Any]:
+    """Synchronous wrapper around `verify_us_proxy`."""
+    try:
+        return asyncio.run(verify_us_proxy(proxy_spec))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(verify_us_proxy(proxy_spec))
+        finally:
+            loop.close()
+
+
 def launch_muse_us_browser(proxy_spec: str = "", on_imported: Optional[Any] = None) -> str:
     """Launch Camoufox anti-detect browser routed through `proxy_spec` (`ip:port:user:pass`)
     with US timezone (`America/Los_Angeles`), `en-US` locale, and WebRTC leak protection.
-    Automatically watches `https://muse.ai` cookies and imports them into `muse2api` as soon as login completes."""
+    Verifies that `proxy_spec` is a valid US proxy before launching."""
     import threading
 
     spec = (proxy_spec or "").strip()
-    if spec:
-        update_muse2api_env_proxy(spec)
+    check = verify_us_proxy_sync(spec)
+    if not check.get("ok"):
+        raise RuntimeError(check.get("error") or "Proxy US không hợp lệ!")
 
-    up_host, up_port, p_user, p_pass = "", 0, "", ""
-    if spec:
-        if "://" not in spec:
-            parts = spec.split(":")
-            if len(parts) == 4:
-                up_host, up_port, p_user, p_pass = parts[0], int(parts[1]), parts[2], parts[3]
-            elif len(parts) == 2:
-                up_host, up_port = parts[0], int(parts[1])
-        else:
-            p = urlparse(spec)
-            up_host = p.hostname or ""
-            up_port = int(p.port or 80)
-            p_user = p.username or ""
-            p_pass = p.password or ""
+    update_muse2api_env_proxy(spec)
+    up_host, up_port, p_user, p_pass, _ = _parse_proxy_spec(spec)
 
     proxy_dict = None
     if up_host and up_port:
@@ -673,30 +801,22 @@ async def auto_login_muse_account(
         inbox_url = f"https://generator.email/inbox1/{email}"
 
     spec = (proxy_spec or "").strip()
-    if spec:
-        update_muse2api_env_proxy(spec)
+    proxy_check = await verify_us_proxy(spec)
+    if not proxy_check.get("ok"):
+        return {
+            "ok": False,
+            "email": email,
+            "error": proxy_check.get("error") or "Bắt buộc phải có Proxy US hợp lệ để đăng nhập Muse!",
+            "proxy_check": proxy_check,
+        }
 
-    up_host, up_port, p_user, p_pass = "", 0, "", ""
-    if spec:
-        if "://" not in spec:
-            parts = spec.split(":")
-            if len(parts) == 4:
-                up_host, up_port, p_user, p_pass = parts[0], int(parts[1]), parts[2], parts[3]
-            elif len(parts) == 2:
-                up_host, up_port = parts[0], int(parts[1])
-        else:
-            p = urlparse(spec)
-            up_host = p.hostname or ""
-            up_port = int(p.port or 80)
-            p_user = p.username or ""
-            p_pass = p.password or ""
+    update_muse2api_env_proxy(spec)
+    up_host, up_port, p_user, p_pass, _ = _parse_proxy_spec(spec)
 
-    proxy_dict = None
-    if up_host and up_port:
-        proxy_dict = {"server": f"http://{up_host}:{up_port}"}
-        if p_user:
-            proxy_dict["username"] = p_user
-            proxy_dict["password"] = p_pass
+    proxy_dict = {"server": f"http://{up_host}:{up_port}"}
+    if p_user:
+        proxy_dict["username"] = p_user
+        proxy_dict["password"] = p_pass
 
     engine = BrowserEngine(headless=headless)
     await engine.start()
